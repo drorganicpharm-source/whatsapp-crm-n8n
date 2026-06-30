@@ -126,6 +126,8 @@ const upload = multer({ dest: 'uploads/', limits: { fileSize: 10 * 1024 * 1024 }
 // ─── API Key Middleware ────────────────────────────────────
 function authMiddleware(req, res, next) {
     if (!API_KEY) return next();
+    // Skip auth for QR and status endpoints
+    if (req.path === '/qr' || req.path === '/status') return next();
     const key = req.headers['x-api-key'] || req.query.api_key;
     if (key === API_KEY) return next();
     res.status(401).json({ error: 'Unauthorized. Provide X-API-Key header.' });

@@ -1,27 +1,24 @@
 FROM node:20-slim
 
-RUN apt-get update && apt-get install -y \
-    chromium \
-    fonts-freefont-ttf \
-    libxss1 \
-    --no-install-recommends \
+# Baileys needs basic build tools for some optional native deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
-
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
-COPY package*.json ./
+COPY package.json ./
 RUN npm install --omit=dev
 
-COPY . .
+COPY server.js ./
 
-RUN mkdir -p /app/data /app/session /app/uploads
+# Persisted WhatsApp session data (mount a Railway Volume here)
+RUN mkdir -p /app/auth_info
+VOLUME ["/app/auth_info"]
 
+ENV PORT=3000
 EXPOSE 3000
-
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
 
 CMD ["node", "server.js"]

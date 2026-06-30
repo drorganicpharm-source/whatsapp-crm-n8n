@@ -1,7 +1,11 @@
 FROM node:20-slim
 
-# Cache bust: forcing fresh build
-ARG CACHEBUST=1
+# Install git (needed by Baileys) and chromium (for web scraping if needed)
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

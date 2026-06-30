@@ -2,6 +2,7 @@ node_modules
 npm-debug.log
 data/
 session/
+auth_session/
 uploads/
 .env
 *.db

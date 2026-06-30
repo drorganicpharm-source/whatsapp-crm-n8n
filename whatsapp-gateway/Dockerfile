@@ -14,9 +14,9 @@ RUN npm install --omit=dev
 
 COPY server.js ./
 
-# Persisted WhatsApp session data (mount a Railway Volume here)
+# Persisted WhatsApp session data (mount a Railway Volume on this path from the dashboard:
+# Service -> Settings -> Volumes -> Mount Path: /app/auth_info)
 RUN mkdir -p /app/auth_info
-VOLUME ["/app/auth_info"]
 
 ENV PORT=3000
 EXPOSE 3000

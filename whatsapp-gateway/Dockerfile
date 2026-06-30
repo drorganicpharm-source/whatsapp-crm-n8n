@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" \
+    && git config --global url."https://".insteadOf "git://"
+
 COPY whatsapp-gateway/package.json ./
 RUN npm install --omit=dev
 

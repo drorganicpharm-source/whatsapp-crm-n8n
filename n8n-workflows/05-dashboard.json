@@ -1,0 +1,84 @@
+{
+  "name": "5. Dashboard Stats Endpoint",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "dashboard-stats",
+        "options": {}
+      },
+      "id": "trigger-stats",
+      "name": "Webhook: Get Stats",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.WHATSAPP_API_KEY }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-stats",
+      "name": "Fetch Gateway Stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.WHATSAPP_API_KEY }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-status",
+      "name": "Fetch Gateway Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [470, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const stats = $('Fetch Gateway Stats').first().json;\nconst status = $('Fetch Gateway Status').first().json;\n\nreturn [{\n  json: {\n    dashboard: {\n      whatsapp_connected: status.whatsapp,\n      client: status.client,\n      uptime_hours: Math.round(status.uptime / 3600 * 10) / 10,\n      customers: stats.customers,\n      messages: stats.messages,\n      replies: stats.replies,\n      campaigns: stats.campaigns,\n      no_reply_count: stats.no_reply,\n      response_rate: stats.messages.sent > 0\n        ? Math.round((stats.replies.total / stats.messages.sent) * 100)\n        : 0\n    }\n  }\n}];"
+      },
+      "id": "merge-data",
+      "name": "Merge Dashboard Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 400]
+    }
+  ],
+  "connections": {
+    "Webhook: Get Stats": {
+      "main": [
+        [
+          { "node": "Fetch Gateway Stats", "type": "main", "index": 0 },
+          { "node": "Fetch Gateway Status", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch Gateway Stats": {
+      "main": [
+        [{ "node": "Merge Dashboard Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Gateway Status": {
+      "main": [
+        [{ "node": "Merge Dashboard Data", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

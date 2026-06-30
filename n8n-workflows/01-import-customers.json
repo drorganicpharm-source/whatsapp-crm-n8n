@@ -1,0 +1,81 @@
+{
+  "name": "1. Import Customers from Excel",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "import-customers",
+        "options": {}
+      },
+      "id": "trigger-import",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/customers/import",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.WHATSAPP_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "file",
+              "parameterType": "formBinaryData",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "import-api",
+      "name": "Import via Gateway API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "message",
+              "value": "=✅ Imported: {{ $json.imported }} customers, skipped: {{ $json.skipped }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-result",
+      "name": "Format Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [690, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [{ "node": "Import via Gateway API", "type": "main", "index": 0 }]
+      ]
+    },
+    "Import via Gateway API": {
+      "main": [
+        [{ "node": "Format Result", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

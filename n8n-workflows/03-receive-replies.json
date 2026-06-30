@@ -1,0 +1,91 @@
+{
+  "name": "3. Receive WhatsApp Replies",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-incoming",
+        "options": {}
+      },
+      "id": "trigger-webhook",
+      "name": "WhatsApp Incoming Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.message }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "filter-empty",
+      "name": "Filter Empty Messages",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            { "name": "customer_id", "value": "={{ $json.customer_id }}" },
+            { "name": "customer_name", "value": "={{ $json.customer_name }}" },
+            { "name": "phone", "value": "={{ $json.phone }}" },
+            { "name": "message", "value": "={{ $json.message }}" },
+            { "name": "timestamp", "value": "={{ $json.timestamp }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "extract-data",
+      "name": "Extract Reply Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [690, 250]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.WHATSAPP_API_KEY }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-stats",
+      "name": "Log Stats (Optional)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [910, 250]
+    }
+  ],
+  "connections": {
+    "WhatsApp Incoming Webhook": {
+      "main": [
+        [{ "node": "Filter Empty Messages", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter Empty Messages": {
+      "main": [
+        [{ "node": "Extract Reply Data", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Extract Reply Data": {
+      "main": [
+        [{ "node": "Log Stats (Optional)", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

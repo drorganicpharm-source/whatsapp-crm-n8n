@@ -1,0 +1,151 @@
+{
+  "name": "4. AI Reply Classification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "classify-reply",
+        "options": {}
+      },
+      "id": "trigger-classify",
+      "name": "Webhook: Classify Reply",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a CRM reply classifier. Classify the customer reply into exactly ONE of these categories:\n- Interested (customer wants to know more, asks questions, shows positive interest)\n- Not Interested (customer says no, not interested, unsubscribe, or negative)\n- Follow Up (customer says call later, not now, busy, or wants to be contacted later)\n- Asking Price (customer asks about price, cost, or pricing details)\n- Other (anything else)\n\nReply with ONLY the category name, nothing else."
+            },
+            {
+              "role": "user",
+              "content": "=Customer Name: {{ $json.customer_name }}\nPhone: {{ $json.phone }}\nMessage: {{ $json.message }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "openai-classify",
+      "name": "AI Classification",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json.message?.content || $input.first().json.text || 'Other';\nconst classification = response.trim();\nconst valid = ['Interested', 'Not Interested', 'Follow Up', 'Asking Price', 'Other'];\nconst finalClass = valid.includes(classification) ? classification : 'Other';\n\nreturn [{\n  json: {\n    customer_id: $('Webhook: Classify Reply').first().json.customer_id,\n    customer_name: $('Webhook: Classify Reply').first().json.customer_name,\n    message: $('Webhook: Classify Reply').first().json.message,\n    classification: finalClass,\n    raw_response: response\n  }\n}];"
+      },
+      "id": "parse-result",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/customers/{{ $json.customer_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.WHATSAPP_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "ai_classification", "value": "={{ $json.classification }}" }
+          ]
+        },
+        "options": { "method": "PUT" }
+      },
+      "id": "update-customer",
+      "name": "Update Customer Classification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.classification }}",
+              "value2": "Interested",
+              "operation": "equals"
+            }
+          ]
+        }
+      },
+      "id": "check-interested",
+      "name": "Is Interested?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/reply",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.WHATSAPP_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "customer_id", "value": "={{ $json.customer_id }}" },
+            { "name": "message", "value": "=شكراً لاهتمامك {{ $json.customer_name }}! 🌟\n\nيسعدنا تواصلك معنا. كيف نقدر نساعدك؟" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "auto-reply",
+      "name": "Auto Reply (Interested)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1350, 250]
+    }
+  ],
+  "connections": {
+    "Webhook: Classify Reply": {
+      "main": [
+        [{ "node": "AI Classification", "type": "main", "index": 0 }]
+      ]
+    },
+    "AI Classification": {
+      "main": [
+        [{ "node": "Parse Classification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [{ "node": "Update Customer Classification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Customer Classification": {
+      "main": [
+        [{ "node": "Is Interested?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Interested?": {
+      "main": [
+        [{ "node": "Auto Reply (Interested)", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

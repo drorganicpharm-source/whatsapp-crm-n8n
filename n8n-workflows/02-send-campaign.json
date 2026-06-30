@@ -1,0 +1,102 @@
+{
+  "name": "2. Send Campaign Messages",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "send-campaign",
+        "options": {}
+      },
+      "id": "trigger-campaign",
+      "name": "Webhook: Start Campaign",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/campaigns",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.WHATSAPP_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "name", "value": "={{ $json.body.campaign_name || 'Campaign ' + Date.now() }}" },
+            { "name": "message_template", "value": "={{ $json.body.message_template }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "create-campaign",
+      "name": "Create Campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.WHATSAPP_GATEWAY_URL }}/api/campaigns/{{ $json.campaign_id }}/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-Key", "value": "={{ $env.WHATSAPP_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "options": {}
+      },
+      "id": "trigger-send",
+      "name": "Trigger Send (Background)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "status",
+              "value": "=Campaign {{ $json.campaign_id }} started. Sending {{ $json.pending }} messages."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "response",
+      "name": "Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [910, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Start Campaign": {
+      "main": [
+        [{ "node": "Create Campaign", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Campaign": {
+      "main": [
+        [{ "node": "Trigger Send (Background)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Trigger Send (Background)": {
+      "main": [
+        [{ "node": "Response", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

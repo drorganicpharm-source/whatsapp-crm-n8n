@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+data/
+session/
+uploads/
+.env
+*.db
+.git
+.gitignore
+README.md

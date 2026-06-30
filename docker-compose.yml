@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # ─── WhatsApp Gateway ───────────────────────────────────
+  whatsapp-gateway:
+    build: ./whatsapp-gateway
+    container_name: whatsapp-gateway
+    ports:
+      - "3000:3000"
+    volumes:
+      - wa-session:/app/session
+      - wa-data:/app/data
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - DB_PATH=/app/data/crm.db
+      - SESSION_PATH=/app/session
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook/whatsapp-incoming
+      - API_KEY=${API_KEY:-changeme}
+      - MIN_DELAY_MS=8000
+      - MAX_DELAY_MS=20000
+      - MAX_RETRIES=3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─── n8n Workflow Engine ────────────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme}
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=Asia/Riyadh
+      - TZ=Asia/Riyadh
+      # WhatsApp Gateway URL
+      - WHATSAPP_GATEWAY_URL=http://whatsapp-gateway:3000
+      - WHATSAPP_API_KEY=${API_KEY:-changeme}
+    restart: unless-stopped
+    depends_on:
+      whatsapp-gateway:
+        condition: service_healthy
+
+volumes:
+  wa-session:
+  wa-data:
+  n8n-data:

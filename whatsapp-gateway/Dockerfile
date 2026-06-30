@@ -1,5 +1,8 @@
 FROM node:20-slim
 
+# Cache bust: forcing fresh build
+ARG CACHEBUST=1
+
 WORKDIR /app
 
 # Copy package files and install

@@ -287,6 +287,11 @@ app.get('/api/qr', (req, res) => {
     res.json({ connected: false, message: 'Waiting for QR code...' });
 });
 
+// ─── QR Code HTML Page ─────────────────────────────────────
+app.get('/qr', (req, res) => {
+    res.sendFile(path.join(__dirname, 'qr.html'));
+});
+
 // ─── Customers CRUD ────────────────────────────────────────
 app.get('/api/customers', (req, res) => {
     const { status, classification, search, page = 1, limit = 50 } = req.query;

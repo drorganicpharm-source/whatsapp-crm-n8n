@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WhatsApp QR Code</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #0f0f23;
+            color: white;
+        }
+        h1 { color: #25D366; }
+        #qr-container {
+            background: white;
+            padding: 20px;
+            border-radius: 16px;
+            margin: 20px;
+        }
+        #qr-image { width: 300px; height: 300px; }
+        .status {
+            margin-top: 20px;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 18px;
+        }
+        .connected { background: rgba(37, 211, 102, 0.2); color: #25D366; }
+        .disconnected { background: rgba(255, 68, 68, 0.2); color: #ff4444; }
+        .loading { background: rgba(255, 167, 38, 0.2); color: #ffa726; }
+        .instructions {
+            margin-top: 30px;
+            max-width: 500px;
+            text-align: right;
+            line-height: 1.8;
+        }
+        .step {
+            background: rgba(255,255,255,0.05);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>📱 WhatsApp CRM</h1>
+    
+    <div id="qr-container">
+        <img id="qr-image" src="" alt="Loading QR Code...">
+    </div>
+    
+    <div id="status" class="status loading">
+        جاري التحميل...
+    </div>
+    
+    <div class="instructions">
+        <div class="step">
+            <strong>١.</strong> افتح WhatsApp على الموبايل
+        </div>
+        <div class="step">
+            <strong>٢.</strong> روح Settings → Linked Devices
+        </div>
+        <div class="step">
+            <strong>٣.</strong> اضغط Link a Device
+        </div>
+        <div class="step">
+            <strong>٤.</strong> امسح الـ QR Code اللي فوق
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        
+        async function checkQR() {
+            try {
+                const res = await fetch(`${API_BASE}/api/qr`);
+                const data = await res.json();
+                
+                const statusEl = document.getElementById('status');
+                const qrImage = document.getElementById('qr-image');
+                
+                if (data.connected) {
+                    statusEl.className = 'status connected';
+                    statusEl.textContent = '✅ متصل بـ WhatsApp!';
+                    qrImage.style.display = 'none';
+                } else if (data.qr) {
+                    statusEl.className = 'status loading';
+                    statusEl.textContent = '📱 امسح الـ QR Code';
+                    qrImage.src = data.qr;
+                    qrImage.style.display = 'block';
+                } else {
+                    statusEl.className = 'status disconnected';
+                    statusEl.textContent = '⏳ جاري التحميل...';
+                }
+            } catch (err) {
+                document.getElementById('status').className = 'status disconnected';
+                document.getElementById('status').textContent = '❌ خطأ في الاتصال';
+            }
+        }
+        
+        // Check every 3 seconds
+        checkQR();
+        setInterval(checkQR, 3000);
+    </script>
+</body>
+</html>

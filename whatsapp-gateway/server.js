@@ -275,6 +275,32 @@ app.get('/api/status', (req, res) => {
     });
 });
 
+// ─── Reset WhatsApp Session ────────────────────────────────
+app.post('/api/reset-session', async (req, res) => {
+    try {
+        console.log('[RESET] Destroying WhatsApp session...');
+        await whatsapp.destroy();
+        whatsappReady = false;
+        qrCodeData = null;
+        clientInfo = null;
+
+        // Delete session files
+        const fs = require('fs');
+        if (fs.existsSync(SESSION_PATH)) {
+            fs.rmSync(SESSION_PATH, { recursive: true, force: true });
+            console.log('[RESET] Session files deleted');
+        }
+
+        // Reinitialize
+        console.log('[RESET] Reinitializing WhatsApp...');
+        whatsapp.initialize();
+
+        res.json({ success: true, message: 'Session reset. New QR code will be generated.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── QR Code Page ──────────────────────────────────────────
 app.get('/api/qr', (req, res) => {
     if (whatsappReady) {

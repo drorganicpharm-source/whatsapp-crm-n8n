@@ -1,9 +1,7 @@
 /**
- * WhatsApp CRM Gateway
- * =====================
- * WhatsApp Web unofficial gateway using whatsapp-web.js
- * Provides REST API for sending messages, receiving replies,
- * managing customers, and integrating with n8n workflows.
+ * WhatsApp CRM Gateway v2
+ * ========================
+ * Uses Baileys (more reliable than whatsapp-web.js)
  */
 
 require('dotenv').config();
@@ -16,21 +14,23 @@ const morgan = require('morgan');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const QRCode = require('qrcode');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
+// Baileys imports
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const pino = require('pino');
+
 // ─── Config ────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || './data/crm.db';
-const SESSION_PATH = process.env.SESSION_PATH || './session';
+const SESSION_PATH = process.env.SESSION_PATH || './auth_session';
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || '';
 const API_KEY = process.env.API_KEY || '';
 const MIN_DELAY = parseInt(process.env.MIN_DELAY_MS) || 8000;
 const MAX_DELAY = parseInt(process.env.MAX_DELAY_MS) || 20000;
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES) || 3;
-const RETRY_DELAY = parseInt(process.env.RETRY_DELAY_MS) || 60000;
 
 // ─── Ensure directories ────────────────────────────────────
 [path.dirname(DB_PATH), SESSION_PATH, './uploads'].forEach(dir => {
@@ -126,141 +126,147 @@ const upload = multer({ dest: 'uploads/', limits: { fileSize: 10 * 1024 * 1024 }
 // ─── API Key Middleware ────────────────────────────────────
 function authMiddleware(req, res, next) {
     if (!API_KEY) return next();
-    // Skip auth for QR and status endpoints
     if (req.path === '/qr' || req.path === '/status') return next();
     const key = req.headers['x-api-key'] || req.query.api_key;
     if (key === API_KEY) return next();
     res.status(401).json({ error: 'Unauthorized. Provide X-API-Key header.' });
 }
-
-// Apply auth to API routes only (not dashboard or QR page)
 app.use('/api', authMiddleware);
 
-// ─── WhatsApp Client ───────────────────────────────────────
+// ─── WhatsApp Client (Baileys) ─────────────────────────────
 let qrCodeData = null;
 let whatsappReady = false;
-let clientInfo = null;
+let sock = null;
 
-const whatsapp = new Client({
-    authStrategy: new LocalAuth({ dataPath: SESSION_PATH }),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu'
-        ]
-    }
-});
+const logger = pino({ level: 'silent' });
 
-whatsapp.on('qr', async (qr) => {
-    qrCodeData = await QRCode.toDataURL(qr, { width: 300 });
-    console.log('[QR] New QR code generated. Scan with WhatsApp.');
-    io.emit('qr', qrCodeData);
-    io.emit('status', { connected: false, message: 'Scan QR code' });
-});
+async function connectWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
+    const { version } = await fetchLatestBaileysVersion();
 
-whatsapp.on('ready', () => {
-    whatsappReady = true;
-    qrCodeData = null;
-    clientInfo = whatsapp.info;
-    console.log(`[WA] Connected as ${clientInfo.pushname} (${clientInfo.wid.user})`);
-    io.emit('ready', { pushname: clientInfo.pushname, phone: clientInfo.wid.user });
-    io.emit('status', { connected: true, message: 'Connected', pushname: clientInfo.pushname });
-});
+    sock = makeWASocket({
+        version,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger)
+        },
+        logger,
+        printQRInTerminal: false,
+        browser: ['WhatsApp CRM', 'Chrome', '120.0'],
+        generateHighQualityLinkPreview: false
+    });
 
-whatsapp.on('disconnected', (reason) => {
-    whatsappReady = false;
-    console.log(`[WA] Disconnected: ${reason}`);
-    io.emit('status', { connected: false, message: `Disconnected: ${reason}` });
-});
+    // Handle QR Code
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-whatsapp.on('auth_failure', (msg) => {
-    whatsappReady = false;
-    console.error(`[WA] Auth failure: ${msg}`);
-    io.emit('status', { connected: false, message: 'Authentication failed. Re-scan QR.' });
-});
+        if (qr) {
+            qrCodeData = await QRCode.toDataURL(qr, { width: 300 });
+            console.log('[QR] New QR code generated. Scan with WhatsApp.');
+            io.emit('qr', qrCodeData);
+            io.emit('status', { connected: false, message: 'Scan QR code' });
+        }
 
-// ─── Incoming Message Handler ──────────────────────────────
-whatsapp.on('message', async (msg) => {
-    if (msg.fromMe) return; // Skip own messages
-    if (msg.isStatus) return; // Skip status updates
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            whatsappReady = false;
+            console.log(`[WA] Connection closed. Status: ${statusCode}`);
 
-    const phone = msg.from.replace('@c.us', '').replace('@g.us', '');
-    const body = msg.body || '';
+            if (statusCode !== DisconnectReason.loggedOut) {
+                console.log('[WA] Reconnecting...');
+                setTimeout(connectWhatsApp, 3000);
+            } else {
+                console.log('[WA] Logged out. Please re-scan QR.');
+                io.emit('status', { connected: false, message: 'Logged out. Re-scan QR.' });
+            }
+        }
 
-    console.log(`[MSG] Incoming from +${phone}: ${body.substring(0, 50)}...`);
+        if (connection === 'open') {
+            whatsappReady = true;
+            qrCodeData = null;
+            console.log('[WA] Connected successfully!');
+            io.emit('ready', { connected: true });
+            io.emit('status', { connected: true, message: 'Connected' });
+        }
+    });
 
-    // Find or create customer
-    let customer = db.prepare('SELECT * FROM customers WHERE phone = ?').get(phone);
-    if (!customer) {
-        const cleanPhone = phone.startsWith('0') ? phone.substring(1) : phone;
-        const fullPhone = cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`;
-        const insert = db.prepare('INSERT OR IGNORE INTO customers (name, phone) VALUES (?, ?)');
-        insert.run(`Customer_${phone}`, fullPhone);
-        customer = db.prepare('SELECT * FROM customers WHERE phone = ?').get(phone);
-    }
+    // Save credentials on update
+    sock.ev.on('creds.update', saveCreds);
 
-    if (customer) {
-        // Store reply
-        db.prepare('INSERT INTO replies (customer_id, message, raw_webhook) VALUES (?, ?, ?)')
-            .run(customer.id, body, JSON.stringify({ from: msg.from, timestamp: msg.timestamp }));
+    // Handle incoming messages
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
 
-        // Forward to n8n webhook
-        if (N8N_WEBHOOK_URL) {
-            fetch(N8N_WEBHOOK_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+        for (const msg of messages) {
+            if (msg.key.fromMe) continue;
+            if (msg.key.remoteJid === 'status@broadcast') continue;
+
+            const phone = msg.key.remoteJid.replace('@s.whatsapp.net', '');
+            const body = msg.message?.conversation ||
+                         msg.message?.extendedTextMessage?.text ||
+                         msg.message?.imageMessage?.caption ||
+                         '';
+
+            if (!body) continue;
+
+            console.log(`[MSG] Incoming from ${phone}: ${body.substring(0, 50)}...`);
+
+            // Find or create customer
+            let customer = db.prepare('SELECT * FROM customers WHERE phone = ?').get(`+${phone}`);
+            if (!customer) {
+                db.prepare('INSERT OR IGNORE INTO customers (name, phone) VALUES (?, ?)').run(`Customer_${phone}`, `+${phone}`);
+                customer = db.prepare('SELECT * FROM customers WHERE phone = ?').get(`+${phone}`);
+            }
+
+            if (customer) {
+                // Store reply
+                db.prepare('INSERT INTO replies (customer_id, message, raw_webhook) VALUES (?, ?, ?)').run(customer.id, body, JSON.stringify(msg));
+
+                // Forward to n8n webhook
+                if (N8N_WEBHOOK_URL) {
+                    fetch(N8N_WEBHOOK_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            customer_id: customer.id,
+                            customer_name: customer.name,
+                            phone: customer.phone,
+                            message: body,
+                            timestamp: new Date().toISOString()
+                        })
+                    }).catch(err => console.error('[WEBHOOK] Failed:', err.message));
+                }
+
+                io.emit('new-reply', {
                     customer_id: customer.id,
                     customer_name: customer.name,
                     phone: customer.phone,
                     message: body,
-                    timestamp: new Date().toISOString(),
-                    message_id: msg.id._serialized
-                })
-            }).catch(err => console.error('[WEBHOOK] Failed to forward:', err.message));
+                    timestamp: new Date().toISOString()
+                });
+            }
         }
-
-        io.emit('new-reply', {
-            customer_id: customer.id,
-            customer_name: customer.name,
-            phone: customer.phone,
-            message: body,
-            timestamp: new Date().toISOString()
-        });
-    }
-});
-
-// ─── Helper: Send Single Message ───────────────────────────
-async function sendWhatsAppMessage(phone, message) {
-    // Normalize phone
-    let cleanPhone = phone.replace(/[^0-9+]/g, '');
-    if (cleanPhone.startsWith('+')) cleanPhone = cleanPhone.substring(1);
-    if (!cleanPhone.endsWith('@c.us')) cleanPhone = `${cleanPhone}@c.us`;
-
-    try {
-        // First, try to get the contact ID
-        const contactId = await whatsapp.getNumberId(cleanPhone.replace('@c.us', ''));
-        if (!contactId) {
-            throw new Error(`Phone ${phone} is not registered on WhatsApp`);
-        }
-        const sent = await whatsapp.sendMessage(contactId._serialized, message);
-        return sent;
-    } catch (err) {
-        // Fallback: try sending directly
-        console.log(`[WA] getNumberId failed, trying direct send: ${err.message}`);
-        const sent = await whatsapp.sendMessage(cleanPhone, message);
-        return sent;
-    }
+    });
 }
 
-// ─── Helper: Random Delay ──────────────────────────────────
+// ─── Helper: Send Message ──────────────────────────────────
+async function sendWhatsAppMessage(phone, message) {
+    if (!whatsappReady || !sock) throw new Error('WhatsApp not connected');
+
+    let cleanPhone = phone.replace(/[^0-9]/g, '');
+    const jid = `${cleanPhone}@s.whatsapp.net`;
+
+    // Check if number exists on WhatsApp
+    const [exists] = await sock.onWhatsApp(jid);
+    if (!exists || !exists.exists) {
+        throw new Error(`Phone +${cleanPhone} is not registered on WhatsApp`);
+    }
+
+    const sent = await sock.sendMessage(jid, { text: message });
+    return sent;
+}
+
+// ─── Helper: Delay ─────────────────────────────────────────
 function randomDelay() {
     return Math.floor(Math.random() * (MAX_DELAY - MIN_DELAY + 1)) + MIN_DELAY;
 }
@@ -273,11 +279,9 @@ function sleep(ms) {
 // API ROUTES
 // ═══════════════════════════════════════════════════════════
 
-// ─── Status ────────────────────────────────────────────────
 app.get('/api/status', (req, res) => {
     res.json({
         whatsapp: whatsappReady,
-        client: clientInfo ? { pushname: clientInfo.pushname, phone: clientInfo.wid.user } : null,
         uptime: process.uptime(),
         stats: {
             customers: db.prepare('SELECT COUNT(*) as count FROM customers').get().count,
@@ -287,49 +291,18 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-// ─── Reset WhatsApp Session ────────────────────────────────
-app.post('/api/reset-session', async (req, res) => {
-    try {
-        console.log('[RESET] Destroying WhatsApp session...');
-        await whatsapp.destroy();
-        whatsappReady = false;
-        qrCodeData = null;
-        clientInfo = null;
-
-        // Delete session files
-        const fs = require('fs');
-        if (fs.existsSync(SESSION_PATH)) {
-            fs.rmSync(SESSION_PATH, { recursive: true, force: true });
-            console.log('[RESET] Session files deleted');
-        }
-
-        // Reinitialize
-        console.log('[RESET] Reinitializing WhatsApp...');
-        whatsapp.initialize();
-
-        res.json({ success: true, message: 'Session reset. New QR code will be generated.' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// ─── QR Code Page ──────────────────────────────────────────
 app.get('/api/qr', (req, res) => {
-    if (whatsappReady) {
-        return res.json({ connected: true, message: 'Already connected' });
-    }
-    if (qrCodeData) {
-        return res.json({ connected: false, qr: qrCodeData });
-    }
+    if (whatsappReady) return res.json({ connected: true, message: 'Already connected' });
+    if (qrCodeData) return res.json({ connected: false, qr: qrCodeData });
     res.json({ connected: false, message: 'Waiting for QR code...' });
 });
 
-// ─── QR Code HTML Page ─────────────────────────────────────
+// ─── QR HTML Page ──────────────────────────────────────────
 app.get('/qr', (req, res) => {
     res.sendFile(path.join(__dirname, 'qr.html'));
 });
 
-// ─── Customers CRUD ────────────────────────────────────────
+// ─── Customers ─────────────────────────────────────────────
 app.get('/api/customers', (req, res) => {
     const { status, classification, search, page = 1, limit = 50 } = req.query;
     let query = 'SELECT * FROM customers WHERE 1=1';
@@ -382,7 +355,7 @@ app.put('/api/customers/:id', (req, res) => {
     res.json(customer);
 });
 
-// ─── Import Customers from Excel ───────────────────────────
+// ─── Import Excel ──────────────────────────────────────────
 app.post('/api/customers/import', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -400,7 +373,6 @@ app.post('/api/customers/import', upload.single('file'), (req, res) => {
 
                 if (!name || !phone) { skipped++; continue; }
 
-                // Normalize phone
                 phone = String(phone).replace(/[^0-9+]/g, '');
                 if (!phone.startsWith('+')) {
                     if (phone.startsWith('00')) phone = '+' + phone.substring(2);
@@ -409,33 +381,26 @@ app.post('/api/customers/import', upload.single('file'), (req, res) => {
                     else phone = '+' + phone;
                 }
 
-                try {
-                    insert.run(name, phone);
-                    imported++;
-                } catch (e) {
-                    skipped++;
-                }
+                try { insert.run(name, phone); imported++; } catch (e) { skipped++; }
             }
             return { imported, skipped };
         });
 
         const result = insertMany(data);
-
-        // Cleanup temp file
         fs.unlinkSync(req.file.path);
 
         res.json({
             total_rows: data.length,
             imported: result.imported,
             skipped: result.skipped,
-            message: `Imported ${result.imported} customers, skipped ${result.skipped} (duplicates or invalid)`
+            message: `Imported ${result.imported} customers, skipped ${result.skipped}`
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// ─── Send Message to Single Customer ───────────────────────
+// ─── Send Message ──────────────────────────────────────────
 app.post('/api/send-message', async (req, res) => {
     if (!whatsappReady) return res.status(503).json({ error: 'WhatsApp not connected' });
 
@@ -452,19 +417,14 @@ app.post('/api/send-message', async (req, res) => {
             targetPhone = customer.phone;
         }
 
-        // Create message record
-        const msgRecord = db.prepare(
-            "INSERT INTO messages (customer_id, message, status) VALUES (?, ?, 'sending')"
-        ).run(custId || 0, message);
+        const msgRecord = db.prepare("INSERT INTO messages (customer_id, message, status) VALUES (?, ?, 'sending')").run(custId || 0, message);
 
         try {
             await sendWhatsAppMessage(targetPhone, message);
-            db.prepare("UPDATE messages SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .run(msgRecord.lastInsertRowid);
+            db.prepare("UPDATE messages SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?").run(msgRecord.lastInsertRowid);
             res.json({ success: true, message_id: msgRecord.lastInsertRowid, status: 'sent' });
         } catch (err) {
-            db.prepare("UPDATE messages SET status = 'failed', error = ? WHERE id = ?")
-                .run(err.message, msgRecord.lastInsertRowid);
+            db.prepare("UPDATE messages SET status = 'failed', error = ? WHERE id = ?").run(err.message, msgRecord.lastInsertRowid);
             res.status(500).json({ success: false, error: err.message, message_id: msgRecord.lastInsertRowid });
         }
     } catch (err) {
@@ -472,44 +432,29 @@ app.post('/api/send-message', async (req, res) => {
     }
 });
 
-// ─── Send Campaign ─────────────────────────────────────────
-app.post('/api/campaigns', async (req, res) => {
+// ─── Campaigns ─────────────────────────────────────────────
+app.post('/api/campaigns', (req, res) => {
     const { name, message_template, customer_ids } = req.body;
     if (!name || !message_template) return res.status(400).json({ error: 'name and message_template required' });
 
-    // Create campaign
-    const campaign = db.prepare('INSERT INTO campaigns (name, message_template) VALUES (?, ?)')
-        .run(name, message_template);
+    const campaign = db.prepare('INSERT INTO campaigns (name, message_template) VALUES (?, ?)').run(name, message_template);
 
-    // Get target customers
     let customers;
     if (customer_ids && customer_ids.length > 0) {
         const placeholders = customer_ids.map(() => '?').join(',');
-        customers = db.prepare(`SELECT * FROM customers WHERE id IN (${placeholders}) AND status = 'active'`)
-            .all(...customer_ids);
+        customers = db.prepare(`SELECT * FROM customers WHERE id IN (${placeholders}) AND status = 'active'`).all(...customer_ids);
     } else {
         customers = db.prepare("SELECT * FROM customers WHERE status = 'active'").all();
     }
 
-    // Link customers to campaign
     const linkStmt = db.prepare('INSERT OR IGNORE INTO campaign_customers (campaign_id, customer_id) VALUES (?, ?)');
-    for (const c of customers) {
-        linkStmt.run(campaign.lastInsertRowid, c.id);
-    }
+    for (const c of customers) linkStmt.run(campaign.lastInsertRowid, c.id);
 
-    // Update campaign count
-    db.prepare('UPDATE campaigns SET total_customers = ?, status = ? WHERE id = ?')
-        .run(customers.length, 'active', campaign.lastInsertRowid);
+    db.prepare('UPDATE campaigns SET total_customers = ?, status = ? WHERE id = ?').run(customers.length, 'active', campaign.lastInsertRowid);
 
-    res.json({
-        campaign_id: campaign.lastInsertRowid,
-        name,
-        total_customers: customers.length,
-        status: 'active'
-    });
+    res.json({ campaign_id: campaign.lastInsertRowid, name, total_customers: customers.length, status: 'active' });
 });
 
-// ─── Process Campaign (send messages with delays) ──────────
 app.post('/api/campaigns/:id/send', async (req, res) => {
     if (!whatsappReady) return res.status(503).json({ error: 'WhatsApp not connected' });
 
@@ -517,7 +462,6 @@ app.post('/api/campaigns/:id/send', async (req, res) => {
     const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
-    // Get pending customers for this campaign
     const pending = db.prepare(`
         SELECT cc.*, c.name, c.phone
         FROM campaign_customers cc
@@ -525,18 +469,10 @@ app.post('/api/campaigns/:id/send', async (req, res) => {
         WHERE cc.campaign_id = ? AND cc.status = 'pending'
     `).all(campaignId);
 
-    if (pending.length === 0) {
-        return res.json({ message: 'No pending customers', campaign_id: campaignId });
-    }
+    if (pending.length === 0) return res.json({ message: 'No pending customers', campaign_id: campaignId });
 
-    // Respond immediately, process in background
-    res.json({
-        campaign_id: campaignId,
-        pending: pending.length,
-        message: `Starting to send ${pending.length} messages with random delays`
-    });
+    res.json({ campaign_id: campaignId, pending: pending.length, message: `Sending ${pending.length} messages` });
 
-    // Process in background
     processCampaign(campaignId, campaign.message_template, pending);
 });
 
@@ -545,166 +481,101 @@ async function processCampaign(campaignId, template, customers) {
 
     for (const customer of customers) {
         try {
-            // Personalize message
-            const personalizedMsg = template.replace(/\{\{Name\}\}/gi, customer.name)
-                                            .replace(/\{\{name\}\}/gi, customer.name)
-                                            .replace(/\{\{Phone\}\}/gi, customer.phone);
+            const personalizedMsg = template.replace(/\{\{Name\}\}/gi, customer.name).replace(/\{\{Phone\}\}/gi, customer.phone);
 
-            // Create message record
-            const msgRecord = db.prepare(
-                "INSERT INTO messages (customer_id, message, direction, status) VALUES (?, ?, 'outgoing', 'sending')"
-            ).run(customer.customer_id, personalizedMsg);
+            const msgRecord = db.prepare("INSERT INTO messages (customer_id, message, direction, status) VALUES (?, ?, 'outgoing', 'sending')").run(customer.customer_id, personalizedMsg);
 
             try {
                 await sendWhatsAppMessage(customer.phone, personalizedMsg);
-
-                db.prepare("UPDATE messages SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?")
-                    .run(msgRecord.lastInsertRowid);
-                db.prepare("UPDATE campaign_customers SET status = 'sent', message_id = ? WHERE campaign_id = ? AND customer_id = ?")
-                    .run(msgRecord.lastInsertRowid, campaignId, customer.customer_id);
+                db.prepare("UPDATE messages SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?").run(msgRecord.lastInsertRowid);
+                db.prepare("UPDATE campaign_customers SET status = 'sent', message_id = ? WHERE campaign_id = ? AND customer_id = ?").run(msgRecord.lastInsertRowid, campaignId, customer.customer_id);
                 db.prepare('UPDATE campaigns SET sent_count = sent_count + 1 WHERE id = ?').run(campaignId);
-
-                console.log(`[SENT] ${customer.name} (${customer.phone})`);
+                console.log(`[SENT] ${customer.name}`);
                 io.emit('campaign-progress', { campaignId, customer: customer.name, status: 'sent' });
-
             } catch (err) {
-                db.prepare("UPDATE messages SET status = 'failed', error = ? WHERE id = ?")
-                    .run(err.message, msgRecord.lastInsertRowid);
-
-                // Retry logic
-                if (customer.retries < MAX_RETRIES) {
-                    db.prepare("UPDATE campaign_customers SET status = 'retry' WHERE campaign_id = ? AND customer_id = ?")
-                        .run(campaignId, customer.customer_id);
-                    console.log(`[RETRY] ${customer.name} - will retry`);
-                } else {
-                    db.prepare("UPDATE campaign_customers SET status = 'failed' WHERE campaign_id = ? AND customer_id = ?")
-                        .run(campaignId, customer.customer_id);
-                    db.prepare('UPDATE campaigns SET failed_count = failed_count + 1 WHERE id = ?').run(campaignId);
-                    console.log(`[FAILED] ${customer.name} - max retries reached`);
-                }
-
+                db.prepare("UPDATE messages SET status = 'failed', error = ? WHERE id = ?").run(err.message, msgRecord.lastInsertRowid);
+                db.prepare("UPDATE campaign_customers SET status = 'failed' WHERE campaign_id = ? AND customer_id = ?").run(campaignId, customer.customer_id);
+                db.prepare('UPDATE campaigns SET failed_count = failed_count + 1 WHERE id = ?').run(campaignId);
+                console.log(`[FAILED] ${customer.name}: ${err.message}`);
                 io.emit('campaign-progress', { campaignId, customer: customer.name, status: 'failed', error: err.message });
             }
 
-            // Random delay between messages
             const delay = randomDelay();
-            console.log(`[DELAY] Waiting ${delay / 1000}s before next message...`);
+            console.log(`[DELAY] Waiting ${delay / 1000}s...`);
             await sleep(delay);
-
         } catch (err) {
-            console.error(`[ERROR] Campaign processing error:`, err.message);
+            console.error(`[ERROR]`, err.message);
         }
     }
 
-    // Mark campaign as completed
-    db.prepare("UPDATE campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .run(campaignId);
+    db.prepare("UPDATE campaigns SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?").run(campaignId);
     console.log(`[CAMPAIGN] Campaign ${campaignId} completed`);
     io.emit('campaign-complete', { campaignId });
 }
 
-// ─── Retry Failed Messages ─────────────────────────────────
-app.post('/api/campaigns/:id/retry', async (req, res) => {
-    if (!whatsappReady) return res.status(503).json({ error: 'WhatsApp not connected' });
-
-    const campaignId = req.params.id;
-    const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
-    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
-
-    // Reset retry customers to pending
-    db.prepare("UPDATE campaign_customers SET status = 'pending' WHERE campaign_id = ? AND status = 'retry'")
-        .run(campaignId);
-
-    const pending = db.prepare(`
-        SELECT cc.*, c.name, c.phone
-        FROM campaign_customers cc
-        JOIN customers c ON c.id = cc.customer_id
-        WHERE cc.campaign_id = ? AND cc.status = 'pending'
-    `).all(campaignId);
-
-    res.json({ campaign_id: campaignId, retrying: pending.length });
-    processCampaign(campaignId, campaign.message_template, pending);
-});
-
-// ─── Campaigns List ────────────────────────────────────────
 app.get('/api/campaigns', (req, res) => {
-    const campaigns = db.prepare('SELECT * FROM campaigns ORDER BY created_at DESC').all();
-    res.json(campaigns);
+    res.json(db.prepare('SELECT * FROM campaigns ORDER BY created_at DESC').all());
 });
 
 app.get('/api/campaigns/:id', (req, res) => {
     const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(req.params.id);
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
-
-    const customers = db.prepare(`
-        SELECT cc.status as send_status, c.*
-        FROM campaign_customers cc
-        JOIN customers c ON c.id = cc.customer_id
-        WHERE cc.campaign_id = ?
-    `).all(req.params.id);
-
+    const customers = db.prepare(`SELECT cc.status as send_status, c.* FROM campaign_customers cc JOIN customers c ON c.id = cc.customer_id WHERE cc.campaign_id = ?`).all(req.params.id);
     res.json({ ...campaign, customers });
 });
 
-// ─── Messages ──────────────────────────────────────────────
+// ─── Messages & Replies ────────────────────────────────────
 app.get('/api/messages', (req, res) => {
     const { customer_id, status, direction, page = 1, limit = 50 } = req.query;
     let query = 'SELECT m.*, c.name as customer_name, c.phone as customer_phone FROM messages m LEFT JOIN customers c ON c.id = m.customer_id WHERE 1=1';
     const params = [];
-
     if (customer_id) { query += ' AND m.customer_id = ?'; params.push(customer_id); }
     if (status) { query += ' AND m.status = ?'; params.push(status); }
     if (direction) { query += ' AND m.direction = ?'; params.push(direction); }
-
     query += ' ORDER BY m.created_at DESC LIMIT ? OFFSET ?';
     params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-
-    const messages = db.prepare(query).all(...params);
-    res.json(messages);
+    res.json(db.prepare(query).all(...params));
 });
 
-// ─── Replies ───────────────────────────────────────────────
 app.get('/api/replies', (req, res) => {
     const { customer_id, classification, page = 1, limit = 50 } = req.query;
     let query = 'SELECT r.*, c.name as customer_name, c.phone as customer_phone FROM replies r LEFT JOIN customers c ON c.id = r.customer_id WHERE 1=1';
     const params = [];
-
     if (customer_id) { query += ' AND r.customer_id = ?'; params.push(customer_id); }
     if (classification) { query += ' AND r.classification = ?'; params.push(classification); }
-
     query += ' ORDER BY r.created_at DESC LIMIT ? OFFSET ?';
     params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-
-    const replies = db.prepare(query).all(...params);
-    res.json(replies);
+    res.json(db.prepare(query).all(...params));
 });
 
-// ─── AI Classification Update (from n8n) ───────────────────
 app.post('/api/replies/:id/classify', (req, res) => {
     const { classification, confidence } = req.body;
     if (!classification) return res.status(400).json({ error: 'classification required' });
-
-    const validClasses = ['Interested', 'Not Interested', 'Follow Up', 'Asking Price', 'Other'];
-    if (!validClasses.includes(classification)) {
-        return res.status(400).json({ error: `Invalid. Must be one of: ${validClasses.join(', ')}` });
-    }
-
-    db.prepare('UPDATE replies SET classification = ?, confidence = ? WHERE id = ?')
-        .run(classification, confidence || 0, req.params.id);
-
-    // Also update customer's latest classification
+    db.prepare('UPDATE replies SET classification = ?, confidence = ? WHERE id = ?').run(classification, confidence || 0, req.params.id);
     const reply = db.prepare('SELECT * FROM replies WHERE id = ?').get(req.params.id);
-    if (reply) {
-        db.prepare('UPDATE customers SET ai_classification = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-            .run(classification, reply.customer_id);
-    }
-
+    if (reply) db.prepare('UPDATE customers SET ai_classification = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(classification, reply.customer_id);
     res.json({ success: true });
 });
 
-// ─── Dashboard / Stats ─────────────────────────────────────
+app.post('/api/reply', async (req, res) => {
+    if (!whatsappReady) return res.status(503).json({ error: 'WhatsApp not connected' });
+    const { customer_id, message } = req.body;
+    if (!customer_id || !message) return res.status(400).json({ error: 'customer_id and message required' });
+    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id);
+    if (!customer) return res.status(404).json({ error: 'Customer not found' });
+
+    try {
+        await sendWhatsAppMessage(customer.phone, message);
+        db.prepare("INSERT INTO messages (customer_id, message, direction, status, sent_at) VALUES (?, ?, 'outgoing', 'sent', CURRENT_TIMESTAMP)").run(customer_id, message);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── Stats ─────────────────────────────────────────────────
 app.get('/api/stats', (req, res) => {
-    const stats = {
+    res.json({
         customers: {
             total: db.prepare('SELECT COUNT(*) as c FROM customers').get().c,
             active: db.prepare("SELECT COUNT(*) as c FROM customers WHERE status='active'").get().c,
@@ -738,88 +609,40 @@ app.get('/api/stats', (req, res) => {
             active: db.prepare("SELECT COUNT(*) as c FROM campaigns WHERE status='active'").get().c,
             completed: db.prepare("SELECT COUNT(*) as c FROM campaigns WHERE status='completed'").get().c
         },
-        no_reply: db.prepare(`
-            SELECT COUNT(*) as c FROM customers
-            WHERE id NOT IN (SELECT DISTINCT customer_id FROM replies)
-            AND id IN (SELECT DISTINCT customer_id FROM messages WHERE direction='outgoing')
-        `).get().c
-    };
-
-    res.json(stats);
+        no_reply: db.prepare(`SELECT COUNT(*) as c FROM customers WHERE id NOT IN (SELECT DISTINCT customer_id FROM replies) AND id IN (SELECT DISTINCT customer_id FROM messages WHERE direction='outgoing')`).get().c
+    });
 });
 
-// ─── Send Reply via Gateway (for n8n to send responses) ────
-app.post('/api/reply', async (req, res) => {
-    if (!whatsappReady) return res.status(503).json({ error: 'WhatsApp not connected' });
+// ─── Health & Dashboard ────────────────────────────────────
+app.get('/health', (req, res) => res.json({ status: 'ok', whatsapp: whatsappReady, uptime: process.uptime() }));
+app.get('/', (req, res) => res.redirect('/dashboard/'));
 
-    const { customer_id, message } = req.body;
-    if (!customer_id || !message) return res.status(400).json({ error: 'customer_id and message required' });
-
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id);
-    if (!customer) return res.status(404).json({ error: 'Customer not found' });
-
-    try {
-        await sendWhatsAppMessage(customer.phone, message);
-
-        db.prepare("INSERT INTO messages (customer_id, message, direction, status, sent_at) VALUES (?, ?, 'outgoing', 'sent', CURRENT_TIMESTAMP)")
-            .run(customer_id, message);
-
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// ─── Health Check (Public) ─────────────────────────────────
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', whatsapp: whatsappReady, uptime: process.uptime() });
-});
-
-// ─── Dashboard Redirect ────────────────────────────────────
-app.get('/', (req, res) => {
-    res.redirect('/dashboard/');
-});
-
-// ─── Socket.IO Connection ──────────────────────────────────
+// ─── Socket.IO ─────────────────────────────────────────────
 io.on('connection', (socket) => {
     console.log('[IO] Client connected');
-
-    // Send current status
-    socket.emit('status', {
-        connected: whatsappReady,
-        message: whatsappReady ? 'Connected' : (qrCodeData ? 'Scan QR code' : 'Initializing...')
-    });
-
+    socket.emit('status', { connected: whatsappReady, message: whatsappReady ? 'Connected' : 'Initializing...' });
     if (qrCodeData) socket.emit('qr', qrCodeData);
-    if (whatsappReady && clientInfo) {
-        socket.emit('ready', { pushname: clientInfo.pushname, phone: clientInfo.wid.user });
-    }
-
+    if (whatsappReady) socket.emit('ready', { connected: true });
     socket.on('disconnect', () => console.log('[IO] Client disconnected'));
 });
 
-// ─── Initialize WhatsApp ───────────────────────────────────
-console.log('[INIT] Initializing WhatsApp client...');
-whatsapp.initialize().catch(err => {
-    console.error('[INIT] Failed to initialize:', err.message);
-});
+// ─── Start ─────────────────────────────────────────────────
+console.log('[INIT] Initializing WhatsApp client with Baileys...');
+connectWhatsApp().catch(err => console.error('[INIT] Failed:', err.message));
 
-// ─── Start Server ──────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 ╔══════════════════════════════════════════════╗
-║   WhatsApp CRM Gateway                      ║
-║   Running on port ${PORT}                       ║
+║   WhatsApp CRM Gateway v2 (Baileys)          ║
+║   Port: ${PORT}                                  ║
 ║   Dashboard: http://localhost:${PORT}/dashboard ║
-║   API: http://localhost:${PORT}/api             ║
 ╚══════════════════════════════════════════════╝
     `);
 });
 
-// ─── Graceful Shutdown ─────────────────────────────────────
 process.on('SIGINT', async () => {
     console.log('\n[SHUTDOWN] Closing...');
-    await whatsapp.destroy();
+    if (sock) sock.end();
     db.close();
     server.close();
     process.exit(0);

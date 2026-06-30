@@ -203,6 +203,6 @@ app.post('/check-number', requireApiKey, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   logger.info(`WhatsApp Gateway listening on port ${PORT}`);
 });

@@ -244,8 +244,20 @@ async function sendWhatsAppMessage(phone, message) {
     if (cleanPhone.startsWith('+')) cleanPhone = cleanPhone.substring(1);
     if (!cleanPhone.endsWith('@c.us')) cleanPhone = `${cleanPhone}@c.us`;
 
-    const sent = await whatsapp.sendMessage(cleanPhone, message);
-    return sent;
+    try {
+        // First, try to get the contact ID
+        const contactId = await whatsapp.getNumberId(cleanPhone.replace('@c.us', ''));
+        if (!contactId) {
+            throw new Error(`Phone ${phone} is not registered on WhatsApp`);
+        }
+        const sent = await whatsapp.sendMessage(contactId._serialized, message);
+        return sent;
+    } catch (err) {
+        // Fallback: try sending directly
+        console.log(`[WA] getNumberId failed, trying direct send: ${err.message}`);
+        const sent = await whatsapp.sendMessage(cleanPhone, message);
+        return sent;
+    }
 }
 
 // ─── Helper: Random Delay ──────────────────────────────────
@@ -758,7 +770,7 @@ app.post('/api/reply', async (req, res) => {
     }
 });
 
-// ─── Health Check ───────────────────────────────────────────
+// ─── Health Check (Public) ─────────────────────────────────
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', whatsapp: whatsappReady, uptime: process.uptime() });
 });

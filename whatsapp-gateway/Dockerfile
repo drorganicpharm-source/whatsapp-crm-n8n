@@ -1,11 +1,12 @@
 FROM node:20-slim
 
-# Install git and openssh for npm git dependencies (Baileys/libsignal)
-RUN apt-get update && apt-get install -y git openssh-client --no-install-recommends && rm -rf /var/lib/apt/lists/*
-
-# Configure git to use HTTPS instead of SSH
-RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && \
-    git config --global url."https://github.com/".insteadOf "git@github.com:"
+# Install git and ssh (required by Baileys/libsignal)
+RUN apt-get update && apt-get install -y \
+    git \
+    openssh-client \
+    curl \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

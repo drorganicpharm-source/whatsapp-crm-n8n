@@ -1,5 +1,6 @@
 /**
  * WhatsApp CRM Gateway v2
+ * Last updated: 2026-06-30 19:45:47
  * ========================
  * Uses Baileys (more reliable than whatsapp-web.js)
  */

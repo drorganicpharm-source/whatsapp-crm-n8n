@@ -9,10 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY package.json ./
+COPY whatsapp-gateway/package.json ./
 RUN npm install --omit=dev
 
-COPY server.js ./
+COPY whatsapp-gateway/server.js ./
 
 # Persisted WhatsApp session data (mount a Railway Volume on this path from the dashboard:
 # Service -> Settings -> Volumes -> Mount Path: /app/auth_info)

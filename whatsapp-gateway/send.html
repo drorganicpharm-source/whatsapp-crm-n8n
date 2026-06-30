@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إدخال بيانات العميل</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #0f0f23; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .container { background: #1a1a3e; padding: 40px; border-radius: 16px; width: 100%; max-width: 500px; border: 1px solid rgba(37,211,102,0.3); }
+        h1 { color: #25D366; text-align: center; margin-bottom: 30px; font-size: 24px; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; color: #aaa; font-size: 14px; }
+        input, textarea { width: 100%; padding: 12px 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: #fff; font-size: 16px; direction: ltr; }
+        input:focus, textarea:focus { outline: none; border-color: #25D366; }
+        textarea { height: 100px; resize: vertical; direction: rtl; }
+        .btn { width: 100%; padding: 14px; background: #25D366; border: none; border-radius: 8px; color: #fff; font-size: 18px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        .btn:hover { background: #1da851; }
+        .btn:disabled { background: #555; cursor: not-allowed; }
+        .btn-secondary { background: rgba(37,211,102,0.2); border: 1px solid #25D366; margin-top: 10px; }
+        .result { margin-top: 20px; padding: 15px; border-radius: 8px; display: none; }
+        .result.success { background: rgba(37,211,102,0.1); border: 1px solid #25D366; display: block; }
+        .result.error { background: rgba(255,82,82,0.1); border: 1px solid #ff5252; display: block; }
+        .divider { border-top: 1px solid rgba(255,255,255,0.1); margin: 30px 0; }
+        h2 { color: #4fc3f7; font-size: 18px; margin-bottom: 20px; }
+        .status { text-align: center; margin-top: 15px; font-size: 13px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📱 WhatsApp CRM</h1>
+
+        <!-- Add Customer -->
+        <h2>إضافة عميل جديد</h2>
+        <div class="form-group">
+            <label>اسم العميل</label>
+            <input type="text" id="customerName" placeholder="مثال: أحمد محمد">
+        </div>
+        <div class="form-group">
+            <label>رقم الهاتف (مع رمز الدولة)</label>
+            <input type="tel" id="customerPhone" placeholder="+9665XXXXXXXX">
+        </div>
+        <button class="btn" onclick="addCustomer()">إضافة عميل</button>
+        <div id="addResult" class="result"></div>
+
+        <div class="divider"></div>
+
+        <!-- Send Message -->
+        <h2>إرسال رسالة</h2>
+        <div class="form-group">
+            <label>رقم الهاتف (مع رمز الدولة)</label>
+            <input type="tel" id="sendPhone" placeholder="+9665XXXXXXXX">
+        </div>
+        <div class="form-group">
+            <label>الرسالة</label>
+            <textarea id="messageText" placeholder="اكتب رسالتك هنا..."></textarea>
+        </div>
+        <button class="btn" onclick="sendMessage()">إرسال رسالة</button>
+        <div id="sendResult" class="result"></div>
+
+        <div class="divider"></div>
+
+        <!-- Status -->
+        <div class="status" id="status">جاري التحقق من الاتصال...</div>
+    </div>
+
+    <script>
+        const API_KEY='myS...23';
+        const API_BASE = window.location.origin + '/api';
+
+        // Check WhatsApp connection status
+        async function checkStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/status`);
+                const data = await res.json();
+                const statusEl = document.getElementById('status');
+                if (data.whatsapp) {
+                    statusEl.innerHTML = '✅ WhatsApp متصل';
+                    statusEl.style.color = '#25D366';
+                } else {
+                    statusEl.innerHTML = '❌ WhatsApp غير متصل - امسح QR من <a href="/qr" style="color:#4fc3f7">هنا</a>';
+                    statusEl.style.color = '#ff5252';
+                }
+            } catch (e) {
+                document.getElementById('status').innerHTML = '❌ خطأ في الاتصال بالسيرفر';
+            }
+        }
+
+        // Add customer
+        async function addCustomer() {
+            const name = document.getElementById('customerName').value.trim();
+            const phone = document.getElementById('customerPhone').value.trim();
+            const resultEl = document.getElementById('addResult');
+
+            if (!name || !phone) {
+                resultEl.className = 'result error';
+                resultEl.innerHTML = '❌ يرجى إدخال الاسم ورقم الهاتف';
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/customers`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': API_KEY
+                    },
+                    body: JSON.stringify({ name, phone })
+                });
+                const data = await res.json();
+                if (data.id) {
+                    resultEl.className = 'result success';
+                    resultEl.innerHTML = `✅ تم إضافة العميل: ${name}<br>الرقم: ${phone}<br>ID: ${data.id}`;
+                    document.getElementById('customerName').value = '';
+                    document.getElementById('customerPhone').value = '';
+                } else {
+                    resultEl.className = 'result error';
+                    resultEl.innerHTML = `❌ ${data.error || 'حدث خطأ'}`;
+                }
+            } catch (e) {
+                resultEl.className = 'result error';
+                resultEl.innerHTML = `❌ خطأ في الاتصال: ${e.message}`;
+            }
+        }
+
+        // Send message
+        async function sendMessage() {
+            const phone = document.getElementById('sendPhone').value.trim();
+            const message = document.getElementById('messageText').value.trim();
+            const resultEl = document.getElementById('sendResult');
+
+            if (!phone || !message) {
+                resultEl.className = 'result error';
+                resultEl.innerHTML = '❌ يرجى إدخال رقم الهاتف والرسالة';
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/send-message`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': API_KEY
+                    },
+                    body: JSON.stringify({ phone, message })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    resultEl.className = 'result success';
+                    resultEl.innerHTML = `✅ تم إرسال الرسالة بنجاح!`;
+                    document.getElementById('messageText').value = '';
+                } else {
+                    resultEl.className = 'result error';
+                    resultEl.innerHTML = `❌ ${data.error || 'حدث خطأ في الإرسال'}`;
+                }
+            } catch (e) {
+                resultEl.className = 'result error';
+                resultEl.innerHTML = `❌ خطأ في الاتصال: ${e.message}`;
+            }
+        }
+
+        checkStatus();
+        setInterval(checkStatus, 30000);
+    </script>
+</body>
+</html>

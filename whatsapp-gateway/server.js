@@ -302,6 +302,11 @@ app.get('/qr', (req, res) => {
     res.sendFile(path.join(__dirname, 'qr.html'));
 });
 
+// ─── Send Page ─────────────────────────────────────────────
+app.get('/send', (req, res) => {
+    res.sendFile(path.join(__dirname, 'send.html'));
+});
+
 // ─── Customers ─────────────────────────────────────────────
 app.get('/api/customers', (req, res) => {
     const { status, classification, search, page = 1, limit = 50 } = req.query;
@@ -415,7 +420,18 @@ app.post('/api/send-message', async (req, res) => {
             const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(custId);
             if (!customer) return res.status(404).json({ error: 'Customer not found' });
             targetPhone = customer.phone;
+        } else if (targetPhone) {
+            // Find or create customer by phone
+            let customer = db.prepare('SELECT * FROM customers WHERE phone = ?').get(targetPhone);
+            if (!customer) {
+                const insert = db.prepare('INSERT INTO customers (name, phone) VALUES (?, ?)').run(`Customer`, targetPhone);
+                custId = insert.lastInsertRowid;
+            } else {
+                custId = customer.id;
+            }
         }
+
+        if (!targetPhone) return res.status(400).json({ error: 'phone or customer_id required' });
 
         const msgRecord = db.prepare("INSERT INTO messages (customer_id, message, status) VALUES (?, ?, 'sending')").run(custId || 0, message);
 

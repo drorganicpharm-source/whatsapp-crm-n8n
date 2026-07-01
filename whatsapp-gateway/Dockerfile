@@ -1,7 +1,8 @@
 FROM node:20-slim
 
-# Install Chromium dependencies + git
+# Install git and Chromium dependencies
 RUN apt-get update && apt-get install -y \
+    git \
     chromium \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
@@ -9,25 +10,28 @@ RUN apt-get update && apt-get install -y \
     fonts-kacst \
     fonts-freefont-ttf \
     libxss1 \
-    git \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Puppeteer to use installed Chromium
+# Force git to use HTTPS instead of SSH
+RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" && \
+    git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+# Set Puppeteer to use installed Chromium (if needed)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
-# Copy package files and install
+# Copy package files first (for caching)
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# Copy source
+# Copy rest of the app
 COPY . .
 
-# Create directories
-RUN mkdir -p /app/data /app/session /app/uploads
+# Create data directories
+RUN mkdir -p /app/data /app/auth_session /app/uploads
 
 EXPOSE 3000
 

@@ -1,8 +1,7 @@
 FROM node:20-slim
 
-# Install git and chromium dependencies
+# Install Chromium dependencies + git
 RUN apt-get update && apt-get install -y \
-    git \
     chromium \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
@@ -10,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     fonts-kacst \
     fonts-freefont-ttf \
     libxss1 \
+    git \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -26,13 +26,11 @@ RUN npm install --omit=dev
 # Copy source
 COPY . .
 
-# Create data directories
-RUN mkdir -p /app/data /app/auth_session /app/uploads
+# Create directories
+RUN mkdir -p /app/data /app/session /app/uploads
 
-# Expose port
 EXPOSE 3000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
